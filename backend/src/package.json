@@ -1,0 +1,13 @@
+{
+"name": "studiosync-backend",
+"version": "1.0.0",
+"description": "BFF for StudioSync with Puppeteer",
+"main": "app.js",
+"scripts": {
+"test": "node --test"
+},
+"dependencies": {
+"@sparticuz/chromium": "^122.0.0",
+"puppeteer-core": "^22.6.0"
+}
+}

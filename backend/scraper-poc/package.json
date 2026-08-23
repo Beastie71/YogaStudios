@@ -1,0 +1,13 @@
+{
+  "name": "scraper-poc",
+  "version": "1.0.0",
+  "description": "Proof of concept for scraping studio schedules",
+  "type": "module",
+  "scripts": {
+    "start": "node momence_scraper.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "puppeteer": "^22.6.0"
+  }
+}

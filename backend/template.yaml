@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: StudioSync BFF
+
+Resources:
+  ScheduleProxyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.handler
+      Runtime: nodejs20.x
+      Architectures:
+        - x86_64
+      MemorySize: 2048    # Increased from 128MB to 2GB for headless Chrome 
+      Timeout: 60         # Increased from 3s to 60s
+      Events:
+        ScheduleProxyApi:
+          Type: Api
+          Properties:
+            Path: /schedules
+            Method: get
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
