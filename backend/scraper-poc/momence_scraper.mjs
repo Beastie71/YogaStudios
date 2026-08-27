@@ -59,7 +59,7 @@ async function scrapeMomenceSchedule() {
         try {
             await page.goto('https://momence.com/sign-in', { waitUntil: 'networkidle2', timeout: 30000 });
         } catch (err) {
-            console.log(`⚠️ Navigation aborted by redirect. Waiting for inputs anyway...`);
+            console.log(`⚠️ Navigation event, waiting for inputs...`);
         }
 
         console.log("🔑 Entering credentials...");
@@ -108,100 +108,99 @@ async function scrapeMomenceSchedule() {
             try {
                 await page.goto(link, { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
                 
-                await page.waitForSelector('div, article, section, li, tr', { timeout: 8000 }).catch(() => {});
-                await new Promise(resolve => setTimeout(resolve, 2000)); 
+                await page.waitForFunction(
+                    () => /\d{1,2}:\d{2}\s*(AM|PM|am|pm)/i.test(document.body.innerText), 
+                    { timeout: 8000 }
+                ).catch(() => {});
+                await new Promise(resolve => setTimeout(resolve, 1000)); 
 
-                const rawStudioTitle = link.split('/').pop().replace(/-/g, ' ');
-                const formattedStudio = rawStudioTitle.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                let rawStudioTitle = link.split('/').pop();
+                rawStudioTitle = rawStudioTitle.replace(/[-,\s]+[a-zA-Z0-9]{6}$/, '');
+                rawStudioTitle = rawStudioTitle.replace(/[-,\s]+$/, '');
+                const formattedStudio = rawStudioTitle.replace(/-/g, ' ').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
-                // --- SHARED PARSER LOGIC ---
-                const scrapedClasses = await page.evaluate((formattedStudio) => {
+                const safeFileName = formattedStudio.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                const htmlContent = await page.content();
+                fs.writeFileSync(`studio_${safeFileName}.html`, htmlContent);
+                console.log(`💾 Saved full DOM HTML to studio_${safeFileName}.html`);
+
+                // --- DIRECT DOM PARSER EXTRACTING BOOKING URL ---
+                const scrapedClasses = await page.evaluate((formattedStudio, studioUrl) => {
                     const sessions = [];
-                    let currentDate = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-                    
-                    const elements = document.querySelectorAll('div, h1, h2, h3, h4, h5, h6, span, article, li');
+                    const articles = document.querySelectorAll('article[data-session_id], article');
 
-                    const isDateString = (text) => {
-                        const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-                        const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'jan', 'feb', 'mar', 'apr', 'aug', 'sep', 'oct', 'nov', 'dec'];
-                        const lowerText = text.toLowerCase();
-                        return (days.some(d => lowerText.includes(d)) && months.some(m => lowerText.includes(m))) || 
-                               (months.some(m => lowerText.includes(m)) && /\d{1,2}/.test(lowerText));
-                    };
+                    articles.forEach((el, index) => {
+                        // 1. Extract Title
+                        const titleEl = el.querySelector('.momence-host_schedule-session_list-item-title');
+                        if (!titleEl) return;
+                        let className = titleEl.innerText.trim();
 
-                    elements.forEach((el, index) => {
-                        const text = el.innerText || "";
-                        
-                        // Catch Date Headers
-                        if (text.length > 5 && text.length < 40 && isDateString(text) && el.children.length === 0) {
-                            currentDate = text.trim();
-                            return; 
+                        // 2. Extract Teacher
+                        const teacherEl = el.querySelector('.momence-session-teacher');
+                        let instructor = "Instructor";
+                        if (teacherEl) {
+                            instructor = teacherEl.innerText
+                                .replace(/Show bio/gi, '')
+                                .replace(/\n/g, ' ')
+                                .trim();
                         }
-                        
-                        const timeMatches = text.match(/\d{1,2}:\d{2}\s*(AM|PM)/gi);
-                        const actionMatches = text.match(/Book|Sign|Waitlist|Full/gi);
 
-                        if (timeMatches && timeMatches.length >= 1 && actionMatches && actionMatches.length >= 1) {
-                            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                            const extractedTime = text.match(/\d{1,2}:\d{2}\s*(AM|PM)/i)?.[0] || "Upcoming";
-                            const isOnline = text.toLowerCase().includes('online') || text.toLowerCase().includes('virtual') || text.toLowerCase().includes('livestream') || text.toLowerCase().includes('zoom');
-                            
-                            let className = "Studio Class";
-                            let instructor = "Instructor";
-                            let cardDate = currentDate;
+                        // 3. Extract Date
+                        const dateEl = el.querySelector('.momence-session-starts_at');
+                        let cardDate = dateEl ? dateEl.innerText.replace(/\n/g, ' ').trim() : "";
 
-                            // Filter out junk lines to find the true title and instructor
-                            const validContentLines = [];
-                            for (const line of lines) {
-                                const lower = line.toLowerCase();
-                                
-                                // Some cards embed the date directly in the text body
-                                if (isDateString(line) && line.length < 40) {
-                                    cardDate = line;
-                                    continue;
-                                }
-
-                                if (
-                                    line.length > 2 && 
-                                    lower !== "class" && 
-                                    lower !== "online class" &&
-                                    lower !== "virtual class" &&
-                                    !lower.match(/\d{1,2}:\d{2}\s*(am|pm)/i) && 
-                                    !lower.includes('book') && 
-                                    !lower.includes('sign') &&
-                                    !lower.includes('waitlist') &&
-                                    !lower.includes('full') &&
-                                    !lower.match(/^\d+\s*(min|hr)/i) && // filter "90 min"
-                                    !lower.includes('show bio') &&
-                                    !lower.includes('show more')
-                                ) {
-                                    validContentLines.push(line);
-                                }
+                        // 4. Extract Start Time (first match only)
+                        const durationEl = el.querySelector('.momence-session-duration');
+                        let startTime = "Upcoming";
+                        if (durationEl) {
+                            const timeMatches = durationEl.innerText.match(/\d{1,2}:\d{2}\s*(AM|PM|am|pm)/i);
+                            if (timeMatches) {
+                                startTime = timeMatches[0].toUpperCase();
                             }
+                        }
 
-                            if (validContentLines.length > 0) {
-                                className = validContentLines[0].replace(/^(Online|Virtual|Livestream)\s*[-:]?\s*/i, '').trim();
-                            }
-                            if (validContentLines.length > 1) {
-                                instructor = validContentLines[1].replace(/^with\s+/i, '').trim();
-                            }
+                        // 5. Extract Direct Booking URL
+                        const sessionId = el.getAttribute('data-session_id');
+                        let bookingUrl = studioUrl;
 
+                        if (sessionId) {
+                            bookingUrl = `https://momence.com/s/${sessionId}?skipPreview=true`;
+                        } else {
+                            const anchor = el.querySelector('a[href*="/s/"], a[href*="/e/"], a[href*="/checkout/"]');
+                            if (anchor && anchor.href) {
+                                bookingUrl = anchor.href;
+                            }
+                        }
+
+                        // 6. Check if Online
+                        const isOnline = el.querySelector('.momence-session-online') !== null || className.toLowerCase().includes('online');
+                        if (isOnline && !className.toLowerCase().includes('(online)')) {
+                            className = `(Online) ${className}`;
+                        }
+
+                        if (cardDate && startTime !== "Upcoming") {
                             sessions.push({
-                                id: `mo_studio_${index}_${Math.random().toString(36).substring(7)}`,
+                                id: sessionId ? `mo_${sessionId}` : `mo_studio_${index}_${Math.random().toString(36).substring(7)}`,
+                                source: 'momence',
                                 studioName: formattedStudio,
                                 dateString: cardDate,
-                                className: isOnline ? `(Online) ${className}` : className,
+                                className: className,
                                 instructor: instructor,
-                                timeString: `${cardDate} - ${extractedTime}`,
+                                timeString: `${cardDate} - ${startTime}`,
+                                bookingUrl: bookingUrl,
                                 isOnline: isOnline
                             });
                         }
                     });
 
+                    // Deduplicate
                     const uniqueSessions = [];
                     const seen = new Set();
                     for (const s of sessions) {
-                        const key = `${s.className}-${s.timeString}-${s.studioName}`;
+                        const key = s.id.startsWith('mo_studio_') 
+                            ? `${s.className}-${s.timeString}-${s.studioName}`
+                            : s.id;
+
                         if (!seen.has(key)) {
                             seen.add(key);
                             uniqueSessions.push(s);
@@ -209,8 +208,7 @@ async function scrapeMomenceSchedule() {
                     }
 
                     return uniqueSessions;
-                }, formattedStudio);
-                // --- END SHARED PARSER LOGIC ---
+                }, formattedStudio, link);
 
                 allScrapedClasses.push(...scrapedClasses);
                 console.log(`✅ Extracted ${scrapedClasses.length} classes from ${formattedStudio}`);

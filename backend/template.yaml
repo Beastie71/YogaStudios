@@ -1,25 +1,119 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: StudioSync BFF
+Description: StudioSync Backend - Scheduled Scraper & Cached REST API
+
+Parameters:
+  WellnessUser:
+    Type: String
+    Description: Email/Username for WellnessLiving
+    NoEcho: true
+  WellnessPass:
+    Type: String
+    Description: Password for WellnessLiving
+    NoEcho: true
+  MomenceUser:
+    Type: String
+    Description: Email/Username for Momence
+    NoEcho: true
+  MomencePass:
+    Type: String
+    Description: Password for Momence
+    NoEcho: true
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+    MemorySize: 2048
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref StudioSyncTable
 
 Resources:
-  ScheduleProxyFunction:
+  StudioSyncTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: StudioSyncClasses
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: provider
+          AttributeType: S
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: provider
+          KeyType: HASH
+        - AttributeName: id
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # 1. API Reader Lambda (Sub-100ms response to Android)
+  ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/
-      Handler: app.handler
-      Runtime: nodejs20.x
-      Architectures:
-        - x86_64
-      MemorySize: 2048    # Increased from 128MB to 2GB for headless Chrome 
-      Timeout: 60         # Increased from 3s to 60s
+      Handler: src/api_handler.handler
+      Timeout: 10
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref StudioSyncTable
       Events:
-        ScheduleProxyApi:
+        GetAllSchedules:
+          Type: Api
+          Properties:
+            Path: /schedules/all
+            Method: get
+        GetSchedules:
           Type: Api
           Properties:
             Path: /schedules
             Method: get
+        GetMomence:
+          Type: Api
+          Properties:
+            Path: /schedules/momence
+            Method: get
+        GetMindbody:
+          Type: Api
+          Properties:
+            Path: /schedules/mindbody
+            Method: get
+        GetWellnessLiving:
+          Type: Api
+          Properties:
+            Path: /schedules/wellnessliving
+            Method: get
+
+  # 2. Worker Scraper Lambda (Runs in background, no API Gateway timeout)
+  ScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: src/scraper_worker.handler
+      Timeout: 600 # 10 Minutes
+      MemorySize: 3008
+      Environment:
+        Variables:
+          WELLNESS_USER: !Ref WellnessUser
+          WELLNESS_PASS: !Ref WellnessPass
+          MOMENCE_USER: !Ref MomenceUser
+          MOMENCE_PASS: !Ref MomencePass
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StudioSyncTable
+      Events:
+        ScheduledScrape:
+          Type: Schedule
+          Properties:
+            Schedule: rate(2 hours)
+            Name: StudioSyncScrapeSchedule
+            Description: Periodic scrape to update DynamoDB schedule cache
+            Enabled: true
+
 Outputs:
   ApiUrl:
-    Description: "API Gateway endpoint URL"
+    Description: Base API Gateway URL for Android App
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
